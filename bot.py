@@ -4,10 +4,15 @@ import requests
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from datetime import datetime
+import nest_asyncio
+import asyncio
+
+# === APPLICO patch per event loop già attivo ===
+nest_asyncio.apply()
 
 # === LEGGO LE VARIABILI D'AMBIENTE ===
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID = int(os.getenv("CHAT_ID"))  # Assicurati che CHAT_ID sia un intero
+CHAT_ID = int(os.getenv("CHAT_ID"))  # Assicurati che sia un intero
 
 CHECK_INTERVAL = 60  # secondi
 
@@ -85,18 +90,15 @@ async def check_prices_job(context: ContextTypes.DEFAULT_TYPE):
     for a in to_remove:
         alerts.remove(a)
 
-async def main():
+def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("alert", alert))
+    app.job_queue.run_repeating(check_prices_job, interval=CHECK_INTERVAL, first=5)
 
-    # Job che gira ogni CHECK_INTERVAL secondi
-    job_queue = app.job_queue
-    job_queue.run_repeating(check_prices_job, interval=CHECK_INTERVAL, first=5)
-
-    await app.run_polling()
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(app.run_polling())
 
 if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())
+    main()
