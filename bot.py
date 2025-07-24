@@ -1,36 +1,39 @@
+import os
 import logging
 import requests
-import os
+from datetime import datetime
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
-from datetime import datetime
 import asyncio
+from dotenv import load_dotenv
 
-# === CONFIGURAZIONE ===
-BOT_TOKEN = os.getenv("BOT_TOKEN")  # ← Railway: setta questa variabile
+# === CARICA VARIABILI D'AMBIENTE (.env o Railway Environment) ===
+load_dotenv()
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
 CHECK_INTERVAL = 60  # in secondi
 
-# === LOGGING ===
+# === SETUP LOGGING ===
 logging.basicConfig(level=logging.INFO)
 
-# === ALERT PREIMPOSTATO (MINA/USD ≤ 0.188) ===
+# === ALERT PRECARICATO (MINA/USD sotto 0.188$) ===
 alerts = [
     {
-        "chat_id": int(os.getenv("CHAT_ID")),  # ← Railway: setta questa variabile
+        "chat_id": CHAT_ID,
         "symbol": "MINA",
-        "price": -0.188
+        "price": -0.188  # negativo = alert se va sotto o è uguale
     }
 ]
 
-# === OTTIENI PREZZO ATTUALE ===
+# === OTTIENI PREZZO ATTUALE DA COINBASE ===
 def get_coinbase_price(symbol: str):
     url = f"https://api.exchange.coinbase.com/products/{symbol.upper()}-USD/ticker"
     r = requests.get(url)
     if r.status_code != 200:
-        raise ValueError("Simbolo non valido o API Coinbase non disponibile.")
+        raise ValueError("Simbolo non valido o problema con API Coinbase.")
     return float(r.json()['price'])
 
-# === OTTIENI APERTURA GIORNALIERA ===
+# === OTTIENI PREZZO DI APERTURA DELLA CANDELA GIORNALIERA ===
 def get_daily_open(symbol: str):
     url = f"https://api.exchange.coinbase.com/products/{symbol.upper()}-USD/candles?granularity=86400"
     r = requests.get(url)
@@ -39,11 +42,11 @@ def get_daily_open(symbol: str):
     candles = r.json()
     if not candles:
         return None
-    return float(candles[0][3])
+    return float(candles[0][3])  # apertura giornaliera
 
 # === /start ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🤖 Ciao! Questo bot ti avviserà quando una cripto raggiunge un prezzo impostato.")
+    await update.message.reply_text("🤖 Ciao! Ti avviserò quando una crypto raggiunge un certo prezzo.")
 
 # === /alert ===
 async def alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -59,7 +62,7 @@ async def alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except:
         await update.message.reply_text("❌ Usa il comando così: /alert MINA 0.188")
 
-# === CONTROLLO PERIODICO ===
+# === MONITORA E INVIA ALERT ===
 async def check_prices(app):
     while True:
         to_remove = []
@@ -85,14 +88,14 @@ async def check_prices(app):
                     await app.bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
                     to_remove.append(alert)
             except Exception as e:
-                print("Errore nel controllo alert:", e)
+                logging.error(f"Errore durante il controllo: {e}")
 
         for a in to_remove:
             alerts.remove(a)
 
         await asyncio.sleep(CHECK_INTERVAL)
 
-# === AVVIO BOT ===
+# === MAIN ASYNC ===
 async def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
@@ -100,5 +103,13 @@ async def main():
     asyncio.create_task(check_prices(app))
     await app.run_polling()
 
+# === ENTRY POINT ROBUSTO PER RAILWAY ===
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            loop.create_task(main())
+        else:
+            loop.run_until_complete(main())
+    except RuntimeError as e:
+        asyncio.run(main())
