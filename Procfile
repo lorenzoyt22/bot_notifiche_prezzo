@@ -1,1 +1,1 @@
-release: python delete_webhook.py
+worker: python bot.py
