@@ -23,6 +23,9 @@ Questo bot Telegram permette di ricevere **notifiche automatiche** quando il pre
 - `requests`
 - `nest_asyncio`
 
+BOT_TOKEN=...   # Token del bot Telegram
+CHAT_ID=...     # Chat ID predefinito 
+
 Installa con:
 
 ```bash
