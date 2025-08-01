@@ -10,10 +10,9 @@ import asyncio
 # === APPLICO PATCH PER EVENT LOOP GIÀ ATTIVO ===
 nest_asyncio.apply()
 
-# === LEGGO LE VARIABILI D'AMBIENTE ===
+# === VARIABILI D'AMBIENTE ===
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = int(os.getenv("CHAT_ID"))  # Deve essere un intero
-
 CHECK_INTERVAL = 60  # Intervallo di controllo in secondi
 
 # === LOGGING ===
@@ -24,16 +23,16 @@ alerts = [
     {
         "chat_id": CHAT_ID,
         "symbol": "MINA",
-        "price": -0.188  # Notifica se il prezzo scende sotto o uguale
+        "price": -0.188
     },
     {
         "chat_id": CHAT_ID,
         "symbol": "GST",
-        "price": -0.006265  # Notifica se il prezzo scende sotto o uguale
+        "price": -0.006265
     }
 ]
 
-# === FUNZIONE PER OTTENERE IL PREZZO ATTUALE ===
+# === OTTIENE PREZZO ATTUALE ===
 def get_coinbase_price(symbol: str):
     url = f"https://api.exchange.coinbase.com/products/{symbol.upper()}-USD/ticker"
     r = requests.get(url)
@@ -41,7 +40,7 @@ def get_coinbase_price(symbol: str):
         raise ValueError("Simbolo non valido o problema API Coinbase.")
     return float(r.json()['price'])
 
-# === FUNZIONE PER OTTENERE L'APERTURA GIORNALIERA ===
+# === OTTIENE PREZZO DI APERTURA GIORNALIERA ===
 def get_daily_open(symbol: str):
     url = f"https://api.exchange.coinbase.com/products/{symbol.upper()}-USD/candles?granularity=86400"
     r = requests.get(url)
@@ -50,13 +49,12 @@ def get_daily_open(symbol: str):
     candles = r.json()
     if not candles:
         return None
-    return float(candles[0][3])  # prezzo di apertura della candela
+    return float(candles[0][3])
 
-# === COMANDO /START ===
+# === /START ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🤖 Ciao! Questo bot ti avviserà quando una cripto raggiunge un prezzo impostato.")
 
-    # Mostra le criptovalute attualmente monitorate
     symbols = list(set([a['symbol'] for a in alerts if a['chat_id'] == update.effective_chat.id]))
     if symbols:
         coin_list = "\n".join([f"• {s}" for s in symbols])
@@ -64,7 +62,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("❌ Nessuna cripto monitorata al momento.")
 
-# === COMANDO /ALERT ===
+# === /ALERT <COIN> <PREZZO> ===
 async def alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         symbol = context.args[0].upper()
@@ -78,7 +76,58 @@ async def alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except:
         await update.message.reply_text("❌ Usa il comando così: /alert MINA 0.188")
 
-# === CONTROLLO PERIODICO DEI PREZZI ===
+# === /REMOVEALERT <COIN> <PREZZO> ===
+async def remove_single_alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        symbol = context.args[0].upper()
+        target_price = float(context.args[1])
+        chat_id = update.effective_chat.id
+
+        before = len(alerts)
+        alerts[:] = [a for a in alerts if not (a["chat_id"] == chat_id and a["symbol"] == symbol and a["price"] == target_price)]
+        after = len(alerts)
+
+        if before != after:
+            await update.message.reply_text(f"🗑️ Alert rimosso per {symbol} a {target_price}$")
+        else:
+            await update.message.reply_text("⚠️ Nessun alert trovato con quei parametri.")
+    except:
+        await update.message.reply_text("❌ Usa il comando così: /removealert MINA 0.188")
+
+# === /REMOVEALERTS <COIN> ===
+async def remove_alerts_for_coin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        symbol = context.args[0].upper()
+        chat_id = update.effective_chat.id
+
+        before = len(alerts)
+        alerts[:] = [a for a in alerts if not (a["chat_id"] == chat_id and a["symbol"] == symbol)]
+        removed_count = before - len(alerts)
+
+        if removed_count > 0:
+            await update.message.reply_text(f"🧹 Rimossi {removed_count} alert per {symbol}.")
+        else:
+            await update.message.reply_text(f"⚠️ Nessun alert trovato per {symbol}.")
+    except:
+        await update.message.reply_text("❌ Usa il comando così: /removealerts BTC")
+
+# === /LISTALERTS ===
+async def list_alerts(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    user_alerts = [a for a in alerts if a["chat_id"] == chat_id]
+
+    if not user_alerts:
+        await update.message.reply_text("📭 Non hai alert attivi.")
+        return
+
+    msg_lines = ["📋 *I tuoi alert attivi:*"]
+    for a in user_alerts:
+        direction = "⬇️ sotto" if a["price"] < 0 else "⬆️ sopra"
+        msg_lines.append(f"• {a['symbol']} {direction} {abs(a['price'])}$")
+
+    await update.message.reply_text("\n".join(msg_lines), parse_mode="Markdown")
+
+# === CONTROLLO PERIODICO ===
 async def check_prices_job(context: ContextTypes.DEFAULT_TYPE):
     to_remove = []
     for alert in alerts:
@@ -108,12 +157,16 @@ async def check_prices_job(context: ContextTypes.DEFAULT_TYPE):
     for a in to_remove:
         alerts.remove(a)
 
-# === FUNZIONE PRINCIPALE ===
+# === MAIN ===
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("alert", alert))
+    app.add_handler(CommandHandler("listalerts", list_alerts))
+    app.add_handler(CommandHandler("removealert", remove_single_alert))
+    app.add_handler(CommandHandler("removealerts", remove_alerts_for_coin))
+
     app.job_queue.run_repeating(check_prices_job, interval=CHECK_INTERVAL, first=5)
 
     loop = asyncio.get_event_loop()
