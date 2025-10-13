@@ -138,7 +138,7 @@ async def check_prices_job(context: ContextTypes.DEFAULT_TYPE):
             if current_price >= target_price or current_price <= target_price:
                 open_price = get_daily_open(alert["symbol"])
                 now = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
-                direction = "📈" if current_price >= target_price else "📉"
+                direction = "📈SALE" if current_price >= target_price else "📉SCENDE"
                 msg = (
                     f"{direction} *ALERT PREZZO RAGGIUNTO*\n"
                     f"💰 Cripto: *{alert['symbol']}*\n"
