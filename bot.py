@@ -1,193 +1,109 @@
 import os
-import logging
 import requests
+import logging
+import asyncio
+from datetime import datetime
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
-from datetime import datetime
 import nest_asyncio
-import asyncio
 
-# === PATCH LOOP ===
 nest_asyncio.apply()
 
-# === VARIABILI D'AMBIENTE ===
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID = int(os.getenv("CHAT_ID")) if os.getenv("CHAT_ID") else None
-CHECK_INTERVAL = 60  # secondi
+CHECK_INTERVAL = 180  # 3 minuti
+logging.basicConfig(level=logging.WARNING)
 
-# === LOGGING ===
-logging.basicConfig(level=logging.INFO)
+session = requests.Session()
 
-# === ALERTS ===
-alerts = [
-    {"chat_id": CHAT_ID, "symbol": "MINA", "price": -0.188},
-    {"chat_id": CHAT_ID, "symbol": "GST", "price": -0.006265}
-]
+alerts = []
 
-# === API COINBASE + USDT.D ===
-def get_coinbase_price(symbol: str):
+def get_price(symbol: str):
     symbol = symbol.upper()
-
     if symbol == "USDT.D":
-        return get_usdt_dominance()  # caso speciale
-
-    url = f"https://api.exchange.coinbase.com/products/{symbol}-USD/ticker"
-    r = requests.get(url)
-    if r.status_code != 200:
-        raise ValueError(f"Simbolo non valido o non supportato: {symbol}")
-    return float(r.json()['price'])
-
-def get_daily_open(symbol: str):
-    if symbol.upper() == "USDT.D":
-        return get_usdt_dominance()  # apertura = valore attuale
-    url = f"https://api.exchange.coinbase.com/products/{symbol}-USD/candles?granularity=86400"
-    r = requests.get(url)
-    if r.status_code != 200:
+        try:
+            data = session.get("https://api.coinlore.net/api/global/", timeout=5).json()
+            return float(data[0].get("usdt_d", 0.0))
+        except:
+            return None
+    try:
+        url = f"https://api.exchange.coinbase.com/products/{symbol}-USD/ticker"
+        r = session.get(url, timeout=5)
+        if r.status_code != 200:
+            return None
+        return float(r.json()["price"])
+    except:
         return None
-    candles = r.json()
-    if not candles:
-        return None
-    return float(candles[0][3])
 
-# === API USDT DOMINANCE ===
-def get_usdt_dominance():
-    """
-    Restituisce la dominance USDT (%) da una fonte pubblica.
-    """
-    url = "https://api.coinlore.net/api/global/"
-    r = requests.get(url)
-    if r.status_code != 200:
-        raise ValueError("Errore nel recupero USDT dominance.")
-    data = r.json()[0]
-    return float(data.get("usdt_d", 0.0))
-
-# === /START ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🤖 Ciao! Questo bot ti avviserà quando una cripto (o USDT.D) raggiunge un prezzo o una variazione impostata."
-    )
+    await update.message.reply_text("🤖 Bot attivo. Usa /alert <COIN> <VALORE o %>")
 
-# === /ALERT <COIN> <PREZZO o %> ===
 async def alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        symbol = context.args[0].upper()
-        target_str = context.args[1]
-
-        current_price = get_coinbase_price(symbol)
-        if target_str.endswith("%"):
-            perc = float(target_str.replace("%", ""))
-            target_price = current_price * (1 + perc / 100)
-            direction = "⬆️ sopra" if perc > 0 else "⬇️ sotto"
-            msg = f"✅ Alert percentuale impostato: {symbol} {direction} {abs(perc)}% → target {target_price:.4f}"
-        else:
-            target_price = float(target_str)
-            direction = "⬆️ sopra" if target_price > current_price else "⬇️ sotto"
-            msg = f"✅ Alert impostato per {symbol} {direction} {target_price} (ora {current_price})"
-
-        alerts.append({
-            "chat_id": update.effective_chat.id,
-            "symbol": symbol,
-            "price": target_price
-        })
-
-        await update.message.reply_text(msg)
-    except Exception as e:
-        print("Errore /alert:", e)
-        await update.message.reply_text("❌ Usa: /alert BTC 60000 oppure /alert BTC 1% o /alert BTC -0.5%")
-
-# === /REMOVEALERT <COIN> <PREZZO> ===
-async def remove_single_alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        symbol = context.args[0].upper()
-        target_price = float(context.args[1])
-        chat_id = update.effective_chat.id
-
-        before = len(alerts)
-        alerts[:] = [a for a in alerts if not (a["chat_id"] == chat_id and a["symbol"] == symbol and a["price"] == target_price)]
-        after = len(alerts)
-
-        if before != after:
-            await update.message.reply_text(f"🗑️ Alert rimosso per {symbol} a {target_price}")
-        else:
-            await update.message.reply_text("⚠️ Nessun alert trovato con quei parametri.")
-    except:
-        await update.message.reply_text("❌ Usa il comando così: /removealert BTC 60000")
-
-# === /REMOVEALERTS <COIN> ===
-async def remove_alerts_for_coin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        symbol = context.args[0].upper()
-        chat_id = update.effective_chat.id
-
-        before = len(alerts)
-        alerts[:] = [a for a in alerts if not (a["chat_id"] == chat_id and a["symbol"] == symbol)]
-        removed_count = before - len(alerts)
-
-        if removed_count > 0:
-            await update.message.reply_text(f"🧹 Rimossi {removed_count} alert per {symbol}.")
-        else:
-            await update.message.reply_text(f"⚠️ Nessun alert trovato per {symbol}.")
-    except:
-        await update.message.reply_text("❌ Usa il comando così: /removealerts BTC")
-
-# === /LISTALERTS ===
-async def list_alerts(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    user_alerts = [a for a in alerts if a["chat_id"] == chat_id]
-
-    if not user_alerts:
-        await update.message.reply_text("📭 Non hai alert attivi.")
+    if len(context.args) < 2:
+        await update.message.reply_text("❌ Usa: /alert BTC 60000 oppure /alert BTC -2%")
+        return
+    symbol = context.args[0].upper()
+    target = context.args[1]
+    price = get_price(symbol)
+    if price is None:
+        await update.message.reply_text("⚠️ Simbolo non valido o non disponibile.")
         return
 
-    msg_lines = ["📋 *I tuoi alert attivi:*"]
-    for a in user_alerts:
-        msg_lines.append(f"• {a['symbol']} → {a['price']}")
+    if target.endswith("%"):
+        perc = float(target[:-1])
+        target_price = price * (1 + perc / 100)
+    else:
+        target_price = float(target)
 
-    await update.message.reply_text("\n".join(msg_lines), parse_mode="Markdown")
+    alerts.append({
+        "chat_id": update.effective_chat.id,
+        "symbol": symbol,
+        "price": target_price
+    })
+    await update.message.reply_text(f"✅ Alert impostato {symbol} → {target_price:.4f} (ora {price:.4f})")
 
-# === CONTROLLO PERIODICO ===
-async def check_prices_job(context: ContextTypes.DEFAULT_TYPE):
+async def list_alerts(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_alerts = [a for a in alerts if a["chat_id"] == update.effective_chat.id]
+    if not user_alerts:
+        await update.message.reply_text("📭 Nessun alert attivo.")
+        return
+    text = "\n".join(f"• {a['symbol']} {a['price']:.4f}" for a in user_alerts)
+    await update.message.reply_text(f"📋 Alert attivi:\n{text}")
+
+async def remove_alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if len(context.args) < 1:
+        await update.message.reply_text("❌ Usa: /removealert BTC")
+        return
+    sym = context.args[0].upper()
+    before = len(alerts)
+    alerts[:] = [a for a in alerts if a["symbol"] != sym or a["chat_id"] != update.effective_chat.id]
+    after = len(alerts)
+    await update.message.reply_text("🧹 Rimossi" if after < before else "⚠️ Nessun alert trovato.")
+
+async def check_prices(context: ContextTypes.DEFAULT_TYPE):
     to_remove = []
-    for alert in alerts:
-        try:
-            current_price = get_coinbase_price(alert["symbol"])
-            target_price = alert["price"]
-            chat_id = alert["chat_id"]
+    for a in alerts:
+        price = get_price(a["symbol"])
+        if price is None:
+            continue
+        if (price >= a["price"] and a["price"] > 0) or (price <= a["price"] and a["price"] < 0):
+            msg = (
+                f"🎯 *{a['symbol']}* ha raggiunto {a['price']:.4f}\n"
+                f"📍 Prezzo attuale: {price:.4f}\n"
+                f"⏰ {datetime.utcnow().strftime('%H:%M:%S UTC')}"
+            )
+            await context.bot.send_message(a["chat_id"], msg, parse_mode="Markdown")
+            to_remove.append(a)
+    for x in to_remove:
+        alerts.remove(x)
 
-            if (current_price >= target_price and alert["price"] > 0) or (current_price <= target_price and alert["price"] < 0):
-                open_price = get_daily_open(alert["symbol"])
-                now = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
-                direction = "📈 SALE" if current_price >= target_price else "📉 SCENDE"
-                msg = (
-                    f"{direction} *ALERT RAGGIUNTO*\n"
-                    f"💰 Asset: *{alert['symbol']}*\n"
-                    f"📅 {now}\n"
-                    f"📍 Prezzo attuale: *{current_price:.4f}*\n"
-                    f"🎯 Target: *{target_price:.4f}*\n"
-                    f"🕯️ Apertura giornaliera: *{open_price:.4f}*"
-                )
-                await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
-                to_remove.append(alert)
-        except Exception as e:
-            print("Errore nel controllo alert:", e)
-
-    for a in to_remove:
-        alerts.remove(a)
-
-# === MAIN ===
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("alert", alert))
     app.add_handler(CommandHandler("listalerts", list_alerts))
-    app.add_handler(CommandHandler("removealert", remove_single_alert))
-    app.add_handler(CommandHandler("removealerts", remove_alerts_for_coin))
-
-    app.job_queue.run_repeating(check_prices_job, interval=CHECK_INTERVAL, first=5)
-
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(app.run_polling())
+    app.add_handler(CommandHandler("removealert", remove_alert))
+    app.job_queue.run_repeating(check_prices, interval=CHECK_INTERVAL, first=10)
+    asyncio.get_event_loop().run_until_complete(app.run_polling())
 
 if __name__ == "__main__":
     main()
