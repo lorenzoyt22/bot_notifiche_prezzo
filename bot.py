@@ -12,7 +12,7 @@ nest_asyncio.apply()
 
 # === VARIABILI D'AMBIENTE ===
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID = int(os.getenv("CHAT_ID"))  # deve essere int
+CHAT_ID = int(os.getenv("CHAT_ID")) if os.getenv("CHAT_ID") else None
 CHECK_INTERVAL = 60  # secondi
 
 # === LOGGING ===
@@ -24,16 +24,23 @@ alerts = [
     {"chat_id": CHAT_ID, "symbol": "GST", "price": -0.006265}
 ]
 
-# === API COINBASE ===
+# === API COINBASE + USDT.D ===
 def get_coinbase_price(symbol: str):
-    url = f"https://api.exchange.coinbase.com/products/{symbol.upper()}-USD/ticker"
+    symbol = symbol.upper()
+
+    if symbol == "USDT.D":
+        return get_usdt_dominance()  # caso speciale
+
+    url = f"https://api.exchange.coinbase.com/products/{symbol}-USD/ticker"
     r = requests.get(url)
     if r.status_code != 200:
-        raise ValueError("Simbolo non valido o problema API Coinbase.")
+        raise ValueError(f"Simbolo non valido o non supportato: {symbol}")
     return float(r.json()['price'])
 
 def get_daily_open(symbol: str):
-    url = f"https://api.exchange.coinbase.com/products/{symbol.upper()}-USD/candles?granularity=86400"
+    if symbol.upper() == "USDT.D":
+        return get_usdt_dominance()  # apertura = valore attuale
+    url = f"https://api.exchange.coinbase.com/products/{symbol}-USD/candles?granularity=86400"
     r = requests.get(url)
     if r.status_code != 200:
         return None
@@ -42,9 +49,23 @@ def get_daily_open(symbol: str):
         return None
     return float(candles[0][3])
 
+# === API USDT DOMINANCE ===
+def get_usdt_dominance():
+    """
+    Restituisce la dominance USDT (%) da una fonte pubblica.
+    """
+    url = "https://api.coinlore.net/api/global/"
+    r = requests.get(url)
+    if r.status_code != 200:
+        raise ValueError("Errore nel recupero USDT dominance.")
+    data = r.json()[0]
+    return float(data.get("usdt_d", 0.0))
+
 # === /START ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🤖 Ciao! Questo bot ti avviserà quando una cripto raggiunge un prezzo o una variazione impostata.")
+    await update.message.reply_text(
+        "🤖 Ciao! Questo bot ti avviserà quando una cripto (o USDT.D) raggiunge un prezzo o una variazione impostata."
+    )
 
 # === /ALERT <COIN> <PREZZO o %> ===
 async def alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -54,16 +75,14 @@ async def alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         current_price = get_coinbase_price(symbol)
         if target_str.endswith("%"):
-            # Alert percentuale
             perc = float(target_str.replace("%", ""))
             target_price = current_price * (1 + perc / 100)
             direction = "⬆️ sopra" if perc > 0 else "⬇️ sotto"
-            msg = f"✅ Alert percentuale impostato: {symbol} {direction} {abs(perc)}% → target {target_price:.6f}$"
+            msg = f"✅ Alert percentuale impostato: {symbol} {direction} {abs(perc)}% → target {target_price:.4f}"
         else:
-            # Alert a valore fisso
             target_price = float(target_str)
             direction = "⬆️ sopra" if target_price > current_price else "⬇️ sotto"
-            msg = f"✅ Alert impostato per {symbol} {direction} {target_price}$ (ora {current_price}$)"
+            msg = f"✅ Alert impostato per {symbol} {direction} {target_price} (ora {current_price})"
 
         alerts.append({
             "chat_id": update.effective_chat.id,
@@ -88,7 +107,7 @@ async def remove_single_alert(update: Update, context: ContextTypes.DEFAULT_TYPE
         after = len(alerts)
 
         if before != after:
-            await update.message.reply_text(f"🗑️ Alert rimosso per {symbol} a {target_price}$")
+            await update.message.reply_text(f"🗑️ Alert rimosso per {symbol} a {target_price}")
         else:
             await update.message.reply_text("⚠️ Nessun alert trovato con quei parametri.")
     except:
@@ -122,7 +141,7 @@ async def list_alerts(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     msg_lines = ["📋 *I tuoi alert attivi:*"]
     for a in user_alerts:
-        msg_lines.append(f"• {a['symbol']} → {a['price']}$")
+        msg_lines.append(f"• {a['symbol']} → {a['price']}")
 
     await update.message.reply_text("\n".join(msg_lines), parse_mode="Markdown")
 
@@ -135,17 +154,17 @@ async def check_prices_job(context: ContextTypes.DEFAULT_TYPE):
             target_price = alert["price"]
             chat_id = alert["chat_id"]
 
-            if current_price >= target_price or current_price <= target_price:
+            if (current_price >= target_price and alert["price"] > 0) or (current_price <= target_price and alert["price"] < 0):
                 open_price = get_daily_open(alert["symbol"])
                 now = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
-                direction = "📈SALE" if current_price >= target_price else "📉SCENDE"
+                direction = "📈 SALE" if current_price >= target_price else "📉 SCENDE"
                 msg = (
-                    f"{direction} *ALERT PREZZO RAGGIUNTO*\n"
-                    f"💰 Cripto: *{alert['symbol']}*\n"
-                    f"📅 Data: *{now}*\n"
-                    f"📍 Prezzo attuale: *{current_price:.6f}$*\n"
-                    f"🎯 Target: *{target_price:.6f}$*\n"
-                    f"🕯️ Apertura giornaliera: *{open_price:.6f}$*"
+                    f"{direction} *ALERT RAGGIUNTO*\n"
+                    f"💰 Asset: *{alert['symbol']}*\n"
+                    f"📅 {now}\n"
+                    f"📍 Prezzo attuale: *{current_price:.4f}*\n"
+                    f"🎯 Target: *{target_price:.4f}*\n"
+                    f"🕯️ Apertura giornaliera: *{open_price:.4f}*"
                 )
                 await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
                 to_remove.append(alert)
